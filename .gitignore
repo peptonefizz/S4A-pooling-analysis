@@ -1,0 +1,41 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+
+# Ignore everything
+*
+
+# Git and Gitignore
+!.gitignore
+
+# Don't ignore directories
+!*/
+
+
+# Don't ignore anywhere
+!**/*.Rmd
+!**/*.md
+!**/*.R
+!**/*.Rproj
+!**/*.csv
+
+!**/*.xlsx
+!**/*.jpg
+!**/*.png
+!**/*.pdf
+!**/*.RDS
+
+# session info
+# !Session\ info/*.txt
+
+# Ignore
+.DS_Store
+.Rproj.user
+
+Archive
+Scripts/Additional_scripts
+Resources
+Outputs
+Data/Phase*
+Data/**/data format with grade & ct-values & rif (single xpt & pool) 020226.csv

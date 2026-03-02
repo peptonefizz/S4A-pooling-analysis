@@ -1,0 +1,509 @@
+---
+title: "S4A Phase 1: pooling analysis"
+author: "Tushar Garg"
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include=F}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo=F,message=F, warning=F)
+suppressMessages(if (!require("pacman")) install.packages("pacman"))
+pacman::p_load(tidyverse,rio,janitor,here,gt)
+pacman::p_load(binGroup2)
+source(here::here("Scripts","0.functions.R"))
+```
+
+```{r import, include=F}
+master <- readRDS(here("Outputs","Intermediate outputs","master_clean.rds"))
+
+master_pool <- import(here("Data",folder_name,"pooled_xpert_ultra.csv")) %>% 
+  rename(poolsize = no_samp_in_pool)
+
+master_ind_xpert_local <- import(here("Data",folder_name,"xpert_result_local_lab.csv"))
+
+master_ind_xpert_ref <- import(here("Data",folder_name,"xpert_result_reference_lab.csv"))
+
+eff_perf <- readRDS(here("Outputs","Intermediate outputs","efficiency_sen_spec.rds"))
+
+```
+
+```{r pool composition}
+pool_composition <- master %>% 
+  group_by(poolno, settingACF) %>% 
+  summarise(n=n()) %>% 
+  filter(!is.na(poolno)) %>% 
+  pivot_wider(names_from = settingACF, values_from = n) %>% 
+  rowwise() %>%
+  mutate(n_pop = sum(!is.na(c_across(c(PHC, ACF, District, Children))))) %>%
+  ungroup()
+
+# creating new column indicating pop composition for pool
+pool_composition <- pool_composition %>%
+   mutate(
+    poolpop = pmap_chr(list(PHC, ACF, District, Children), \(p, a, d, c) {
+      parts <- c(
+        if (!is.na(p) && p > 0) "PHC",
+        if (!is.na(a) && a > 0) "ACF",
+        if (!is.na(d) && d > 0) "District",
+        if (!is.na(c) && c > 0) "Children"
+      )
+      if (length(parts) == 0) NA_character_ else paste(parts, collapse = "+")
+    })
+  )
+```
+
+```{r pool summary population}
+# summary of pools based on population (settingACF)
+pool_summary_pop <- master %>% 
+  group_by(poolno, Country_Name, poolsize) %>%
+  filter(!is.na(poolno)) %>% 
+  summarise(n=n()) %>%
+  ungroup() %>%
+  left_join(.,pool_composition,by="poolno")
+
+# unique(pool_summary_pop$poolpop)
+
+# exporting for viz_sankey_pool_population.R sankey diagram
+saveRDS(pool_summary_pop, here("Outputs","Intermediate outputs","pool_summary_pop.rds"))
+```
+
+```{r xpert recode}
+lvl_xpert <- c("pos","trace","neg","invalid","error","noresult")
+
+# Recode xpert
+master <- recode_xpert_pool_results(master,
+                                    xpert_result_col = "Xpert_result",
+                                    pool_result_col  = "pool_resultt",
+                                    xpert_trace = c("as_pos"),
+                                    pool_trace  = c("as_pos_xpert"))
+
+
+# Make it coherent with STARD by removing all invalid pools
+# remove all individuals with pooling = NA
+master <- master %>% 
+  filter(!is.na(pooling))
+
+# check
+# master %>% tabyl(pool_xpert_result, pooling)
+
+# Recode pooled xpert values
+master_pool <- master_pool %>%
+  mutate(
+    across(
+      all_of(c("xpert_p1_mtb", "xpert_p2_mtb")),
+      ~ case_when(
+        as.integer(.) == 1 ~ "pos",
+        as.integer(.) == 2 ~ "neg",
+        as.integer(.) == 3 ~ "trace",
+        as.integer(.) == 4 ~ "invalid",
+        as.integer(.) == 5 ~ "error",
+        as.integer(.) == 6 ~ "noresult",
+        TRUE               ~ NA_character_
+      )
+    )
+  ) %>%
+  mutate(
+    across(all_of(c("xpert_p1_mtb", "xpert_p2_mtb")), ~ factor(., levels = lvl_xpert))
+  ) %>% 
+  mutate(Country_Name = if_else(Country_Name %in% c("Nigeria JHF", "Nigeria ZRC"), "Nigeria", Country_Name))
+
+# create a final pooled result based on repeated pooled result = xpert_p_mtb
+master_pool <- master_pool %>%
+  mutate(xpert_p_mtb = case_when(
+      # If P2 is NA, keep P1
+      is.na(xpert_p2_mtb) ~ as.character(xpert_p1_mtb),
+      # If P2 is (pos/trace), prefer P2 over P1
+      as.character(xpert_p2_mtb) %in% c("pos","trace") ~ as.character(xpert_p2_mtb),
+      # If P1 is inconclusive (invalid/error/noresult), fall back to P2
+      as.character(xpert_p1_mtb) %in% c("invalid","error","noresult") ~ as.character(xpert_p2_mtb),
+      # If P1 is pos/trace but P2 is not, keep P1 (protect P1 positives)
+      as.character(xpert_p1_mtb) %in% c("pos","trace") & !as.character(xpert_p2_mtb) %in% c("pos","trace") ~ as.character(xpert_p1_mtb),
+      # Otherwise default to P1 (e.g., both neg, or P2 non-informative)
+      TRUE ~ as.character(xpert_p1_mtb)
+    ) |> factor(levels = lvl_xpert)
+  ) %>% 
+  mutate(
+    cartridge_used = case_when(
+      !is.na(xpert_p1_mtb) & !is.na(xpert_p2_mtb) ~ 2,
+      is.na(xpert_p1_mtb) | is.na(xpert_p2_mtb) ~ 1,
+    )
+  )
+```
+
+```{r pool summary}
+# summary of pools and repeat pools
+pool_summary <- master_pool %>% 
+  group_by(Country_Name, poolsize, xpert_p1_mtb, xpert_p2_mtb, xpert_p_mtb) %>%
+  summarise(n=n(),
+            cartridge_used = sum(cartridge_used)) %>% 
+  ungroup()
+
+# exporting to intermediate outputs for Sankey diagram
+saveRDS(pool_summary, here("Outputs","Intermediate outputs","pool_summary.rds"))
+```
+
+```{r individual xpert inconclusive proportion}
+# What is the proportion of Xpert that need to be repeated because of Invalid/Error/No Result?
+master_ind_xpert1 <- bind_rows(
+  master_ind_xpert_local %>%
+    mutate(source = "local", code = as.integer(xpert_s1_mtb), .keep = "none"),
+  master_ind_xpert_ref %>%
+    filter(!is.na(xpert_rs_repeated)) %>%
+    mutate(source = "ref", code = as.integer(xpert_rs1_mtb), .keep = "none")
+) %>%
+  filter(!is.na(code)) %>%
+  mutate(result = case_when(
+    code == 1 ~ "pos",
+    code == 2 ~ "neg",
+    code == 3 ~ "trace",
+    code == 4 ~ "invalid",
+    code == 5 ~ "error",
+    code == 6 ~ "noresult"
+  ))
+
+master_ind_xpert1_summary <- master_ind_xpert1 %>% tabyl(result)
+
+# proportion of codes 4/5/6 out of total 
+p_xpert_repeat <- master_ind_xpert1 %>%
+  summarise(prop_456 = mean(code %in% c(4,5,6), na.rm = TRUE)) %>%
+  dplyr::pull(prop_456)
+```
+
+
+```{r efficiency analysis}
+# n_pools_result = number of pools with result
+# n_pools_mtb    = number of pools with MTB detected
+
+# n_pool_cartridges = number of Ultra cartridges used in testing of pools (includes actual number for repeat of inconclusive)
+# n_pooling_cartridges = number of Ultra cartridges used in pooling algorithm 
+                    # = n_pool_cartridges + (PositivePools*Poolsize)(1+individual repeat testing proportion calculated from actual individual testing data)
+
+# n_ind_result = number of individuals with individual Xpert result
+# n_ind_mtb = number of individuals with individual Xpert MTB detected
+
+# n_pooling_result = number of individuals with pooling algorithm result
+# n_pooling_mtb = number of individuals with pooling algorithm MTB detected
+
+# test_per_person = number of cartridges used in pooling algorithm per individual with result
+# tests_needed_ind = number of cartridge needed for individual testing (inflates for repeat testing as above)
+
+summarize_pooling_efficiency <- function(data_pool,
+                                         data_ind,
+                                         xpert_repeat_prop = 0,
+                                         group_var = NULL,   # e.g. "Country_Name" or NULL
+                                         by_poolsize = TRUE) {
+  
+  # --- helpers ---
+  gv   <- if (is.null(group_var)) character(0) else group_var
+  by_k <- c(gv, "poolsize")
+  join_keys <- c(if (by_poolsize) "poolsize", gv)
+  
+  # --- pool-level (by poolsize first) ---
+  pool_by_k <- data_pool %>%
+    mutate(
+      has_result = .data$xpert_p_mtb %in% c("pos","trace","neg","invalid","error","noresult"),
+      mtb_pos    = .data$xpert_p_mtb %in% c("pos","trace")
+    ) %>%
+    group_by(across(all_of(by_k))) %>%
+    summarise(
+      n_pools_result   = n_distinct(.data$poolno[.data$has_result]),
+      n_pools_mtb      = n_distinct(.data$poolno[.data$mtb_pos]),
+      n_pool_cartridges = sum(.data$cartridge_used, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  pool_sum <- if (by_poolsize) {
+    pool_by_k %>%
+      mutate(n_pooling_cartridges =
+               .data$n_pool_cartridges +
+               ceiling((.data$n_pools_mtb*.data$poolsize)*(1 + xpert_repeat_prop)))
+  } else {
+    pool_by_k %>%
+      group_by(across(all_of(gv))) %>%
+      summarise(
+        n_pools_result    = sum(.data$n_pools_result, na.rm = TRUE),
+        n_pools_mtb       = sum(.data$n_pools_mtb, na.rm = TRUE),
+        n_pool_cartridges = sum(.data$n_pool_cartridges, na.rm = TRUE),
+        sum_mtb_k         = sum(.data$n_pools_mtb * .data$poolsize, na.rm = TRUE),
+        .groups = "drop"
+      ) %>%
+      mutate(n_pooling_cartridges =
+               .data$n_pool_cartridges +
+               ceiling(.data$sum_mtb_k * (1 + xpert_repeat_prop))) %>%
+      select(-.data$sum_mtb_k)
+  }
+  
+  # --- individual-level (by poolsize first) ---
+  ind_by_k <- data_ind %>%
+    group_by(across(all_of(by_k))) %>%
+    summarise(
+      n_ind_result     = sum(!is.na(.data$`Xpert Resultt`)),
+      n_ind_mtb        = sum(.data$`Xpert Resultt` %in% c("Detected","Trace"), na.rm = TRUE),
+      n_pooling_result = sum(!is.na(.data$pooling)),
+      n_pooling_mtb    = sum(.data$pooling %in% c("pos"), na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    # mutate(p_positivity = .data$n_pooling_mtb / .data$n_ind_result)
+     mutate(p_positivity = .data$n_ind_mtb / .data$n_ind_result) #use individual Xpert positivity
+
+  ind_sum <- if (by_poolsize) {
+    ind_by_k
+  } else {
+    ind_by_k %>%
+      group_by(across(all_of(gv))) %>%
+      summarise(
+        n_ind_result     = sum(.data$n_ind_result, na.rm = TRUE),
+        n_ind_mtb        = sum(.data$n_ind_mtb, na.rm = TRUE),
+        n_pooling_result = sum(.data$n_pooling_result, na.rm = TRUE),
+        n_pooling_mtb    = sum(.data$n_pooling_mtb, na.rm = TRUE),
+        .groups = "drop"
+      ) %>%
+      # mutate(p_positivity = .data$n_pooling_mtb / .data$n_ind_result)
+      mutate(p_positivity = .data$n_ind_mtb / .data$n_ind_result) #use individual Xpert positivity
+  }
+  
+  # --- combine + overall ---
+  out <- full_join(pool_sum, ind_sum, by = join_keys)
+  
+  if (length(join_keys)) {
+    out <- out %>% arrange(across(all_of(join_keys)))
+  }
+  
+  out %>%
+    mutate(
+      test_per_person = n_pooling_cartridges / n_pooling_result,
+      tests_needed_ind = ceiling(n_ind_result * (1 + xpert_repeat_prop))
+    )
+}
+
+# by poolsize only
+summary_efficiency <- summarize_pooling_efficiency(master_pool, master, xpert_repeat_prop = p_xpert_repeat)
+```
+
+```{r Dorfman calculation using binGroup2}
+pool_mat <- function(k) rbind(rep(1, k), seq_len(k))
+
+dorfman_summary <- function(p, k, SeP, SeI, SpP, SpI) {
+  oc <- binGroup2::opChar1(
+    algorithm   = "D2",
+    p           = p,
+    Se          = c(SeP, SeI),
+    Sp          = c(SpP, SpI),
+    hier.config = pool_mat(k),
+    print.time  = FALSE
+  )
+  
+  acc_tbl <- binGroup2::Accuracy(oc, individual = FALSE)[["Overall"]] %>% 
+    as_tibble()
+  
+  et_tbl <- binGroup2::ExpTests(oc) 
+  
+  bind_cols(
+    tibble(
+      `Input: prevalence (p)`  = p,
+      `Input: pool size (k)`   = k,
+      `Input: SeP`             = SeP,
+      `Input: SeI`             = SeI,
+      `Input: SpP`             = SpP,
+      `Input: SpI`             = SpI
+    ),
+    acc_tbl,
+    as_tibble(et_tbl)
+  )
+}
+
+# lookups for sensitivity and specificity based on imported eff_perf
+# pool_params <- eff_perf %>%
+#   filter(test == "pooling", !is.na(poolsize)) %>%
+#   transmute(poolsize = as.integer(poolsize),
+#             SeP = sensitivity,
+#             SpP = specificity)
+
+xpert_params <- eff_perf %>%
+  filter(test == "xpert") %>%
+  summarise(SeI = first(sensitivity), SpI = first(specificity))
+```
+
+
+```{r table efficiency}
+eff_pool <- summary_efficiency %>%
+  rowwise() %>%
+  mutate(res = list(dorfman_summary(
+    p    = p_positivity,
+    k    = poolsize,
+    SeP  = xpert_params$SeI,
+    SeI  = xpert_params$SeI,
+    SpP  = xpert_params$SpI,
+    SpI  = xpert_params$SpI
+  ))) %>%
+  unnest(res)
+
+eff_overall <- eff_pool %>%
+  summarise(
+    poolsize = "Overall",
+    across(starts_with("n_"), ~ sum(.x, na.rm = TRUE))
+  ) %>%
+  mutate(
+    test_per_person   = n_pooling_cartridges / n_pooling_result,
+    tests_needed_ind  = ceiling(n_ind_result * (1 + p_xpert_repeat))
+  )
+
+eff_all <- bind_rows(eff_overall, 
+                     eff_pool %>% mutate(poolsize = as.character(poolsize))) %>% 
+  select(1:p_positivity,ExpTestsPerIndividual,PercentReductionTests
+         #,PercentIncreaseTestCap
+         )
+```
+
+```{r efficiency gt table formatting}
+# --- types (ensure numeric) ---
+eff_all <- eff_all %>%
+  mutate(
+    ExpTestsPerIndividual  = parse_number(as.character(ExpTestsPerIndividual)),
+    test_per_person        = parse_number(as.character(test_per_person)),
+    PercentReductionTestsActual  = parse_number(as.character(1-(n_pooling_cartridges/tests_needed_ind))),
+    PercentReductionTests  = parse_number(as.character(PercentReductionTests))/100,
+    # PercentIncreaseTestCap = parse_number(as.character(PercentIncreaseTestCap))/100,
+    p_positivity           = parse_number(as.character(p_positivity))
+  ) %>% 
+  select(-n_pooling_result)
+
+label_map <- tribble(
+  ~var,                      ~label,                                                                             ~group,
+  
+  # --- Pool counts ---
+  "n_pools_result",           "Pools with result",                                                                "Pool counts",
+  "n_pools_mtb",              "Pools with MTB detected",                                                          "Pool counts",
+  
+  # --- Cartridge utilization ---
+  # "n_pool_cartridges",        "Xpert cartridges for pools \u2021",                                               "Xpert cartridge utilization",
+  "n_pooling_cartridges",     "Total Xpert cartridges for pooling patient result [*a*] \u2020",                  "Xpert cartridge utilization",
+  "tests_needed_ind",         "Total Xpert cartridges for individual testing [*b*] \u2020",                      "Xpert cartridge utilization",
+  
+  # --- Results ---
+  "n_ind_result",             "People with valid result on individual and pooled test [*c*]",                     "Results",
+  "n_ind_mtb",                "Number of MTB detected on individual Xpert [*d*]",                                 "Results",
+  "n_pooling_mtb",            "Number of MTB detected on pooling patient result",                                 "Results",
+  
+  # --- Efficiency of pooled testing ---
+  "test_per_person",          "Cartridges per valid pooling patient result [*a*/*c*]",                       "Efficiency of pooled testing",
+  "PercentReductionTestsActual", "Observed reduction in cartridge use [*e* = 1 – *a*/*b*]",                     "Efficiency of pooled testing",
+  "p_positivity",             "Proportion of MTB detected on individual Xpert test [*f* = *d*/*c*]",    "Efficiency of pooled testing",
+  "ExpTestsPerIndividual",    "Predicted cartridges per valid pooling patient result \u00A7",     "Efficiency of pooled testing",
+  "PercentReductionTests",    "Predicted reduction in cartridges \u00A7",                         "Efficiency of pooled testing"
+)
+
+ # mutate(p_positivity = .data$n_pooling_mtb / .data$n_ind_result)
+# --- order poolsize and transpose ---
+eff_all <- eff_all %>%
+  mutate(poolsize = factor(poolsize, levels = c("Overall","2","3","4"))) %>%
+  arrange(poolsize)
+
+tab_wide <- eff_all %>%
+  select(poolsize, all_of(label_map$var)) %>%
+  pivot_longer(-poolsize, names_to = "var", values_to = "value") %>%
+  left_join(label_map, by = "var") %>%
+  mutate(pool_col = as.character(poolsize)) %>%
+  select(group, label, pool_col, value) %>%
+  pivot_wider(names_from = pool_col, values_from = value) %>%
+  arrange(factor(group, levels = c("Pool counts","Xpert cartridge utilization","Results","Efficiency of pooled testing"))) %>%
+  relocate(group, label)
+
+# --- row selectors for formatting ---
+int_labels  <- label_map %>% filter(var %in% c(
+  "n_pools_result","n_pools_mtb","n_pool_cartridges","n_pooling_cartridges",
+  "n_ind_result","n_ind_mtb","n_pooling_result","n_pooling_mtb","tests_needed_ind"
+)) %>% pull(label)
+
+rate_labels <- label_map %>% filter(var %in% c(
+  "test_per_person","ExpTestsPerIndividual","p_positivity"
+)) %>% pull(label)
+
+pct_labels  <- label_map %>% filter(var %in% c(
+  "PercentReductionTests","PercentIncreaseTestCap","PercentReductionTestsActual"
+)) %>% pull(label)
+
+# --- build gt ---
+efficiency_tbl <- tab_wide %>%
+  gt(rowname_col = "label", groupname_col = "group") %>%
+  tab_header(
+    title = md("**Efficiency of pooled testing**"),
+    subtitle = NULL
+  ) %>%
+  cols_label(`Overall` = "Overall", `2` = "2", `3` = "3", `4` = "4") %>%
+  fmt_missing(columns = everything(), missing_text = "\u2014") %>%
+  fmt_integer(
+    columns = c(Overall, `2`, `3`, `4`),
+    rows = label %in% int_labels,
+    use_seps = TRUE
+  ) %>%
+  fmt_number(
+    columns = c(Overall, `2`, `3`, `4`),
+    rows = label %in% rate_labels,
+    decimals = 2
+  ) %>%
+  fmt_percent(
+    columns = c(Overall, `2`, `3`, `4`),
+    rows = label %in% pct_labels,
+    decimals = 1
+  ) %>%
+  row_group_order(c("Pool counts","Xpert cartridge utilization","Results","Efficiency of pooled testing")) %>%
+  opt_table_outline() %>%
+  tab_options(
+    table.font.size = px(12),
+    data_row.padding = px(4),
+    heading.title.font.weight = "bold",
+    heading.subtitle.font.size = px(11)
+  ) %>%
+  tab_source_note(
+    md("*Total Xpert cartridges for pooling patient results (*a*) include cartridges used for both pooled tests and follow-on individual testing of positive pools, whereas total Xpert cartridges for individual testing (*b*) represent cartridges used to obtain results for all specimens individually.*")
+  ) %>% 
+  tab_source_note(
+    md(sprintf(
+      "\u2020 *Cartridge counts (pooled and individual) include repeats for inconclusive results at an observed rate of %.1f%%.*",
+      p_xpert_repeat * 100
+    ))
+  ) %>%
+  tab_source_note(
+    md(sprintf(
+      "*Cartridges used in testing of pools (%.1f%%) include observed repeats for inconclusive results.*",
+      eff_overall$n_pool_cartridges
+    ))
+  ) %>%
+  tab_source_note(
+    md(sprintf(
+      "\u00A7 *Predicted using Dorfman efficiency for two-stage hierarchical testing based on proportion positive (*d*), pool size, observed sensitivity (%.1f%%), and specificity (%.1f%%).*",
+      xpert_params$SeI * 100,
+      xpert_params$SpI * 100
+    ))
+  ) %>% 
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_row_groups(groups = everything())
+  ) %>% 
+  gt::fmt_markdown(columns = stub())
+
+efficiency_tbl %>% gtsave(here("Outputs","TableEfficiency","Table_efficiency_overall.docx"))
+```
+
+```{r}
+# At pool level, taking actual retested cartridge.
+# At individual, calculated overall and then used as a proportion
+p_xpert_repeat
+# At the pooled test level, cartridge use is estimated as follows: each pool is assumed to require one cartridge for the first Xpert run (P1), and an additional cartridge only if a repeat pooled test (P2) was performed—thus, cartridge_used = 2 when both P1 and P2 exist, otherwise 1. This approach assumes that no pool undergoes more than one repeat (i.e., a maximum of two pooled tests per pool).
+# 
+# The total number of pooled cartridges (n_pool_cartridges) is calculated as the sum of observed cartridges used across all pools, capturing only the actual first and repeat runs.
+# 
+# To estimate the total number of cartridges required by the full pooling algorithm, the model adds the expected individual testing burden for positive pools where each MTB-positive pool triggers testing of all its individual specimens, inflated by the empirically observed proportion of Xpert repeats (xpert_repeat_prop).
+```
+
+
+```{r potential application}
+# This can be done as a sensitivity analysis.
+# by Country_Name + poolsize
+summary_efficiency_cn <- summarize_pooling_efficiency(master_pool, master, p_xpert_repeat, group_var = "Country_Name", by_poolsize = TRUE)
+
+# by Country_Name only (poolsize collapsed)
+summary_efficiency_cn_total <- summarize_pooling_efficiency(master_pool, master, p_xpert_repeat, group_var = "Country_Name", by_poolsize = FALSE)
+```
+

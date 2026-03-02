@@ -1,0 +1,528 @@
+---
+title: "S4A Phase 1: pooling analysis"
+author: "Tushar Garg"
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include=F}
+knitr::opts_chunk$set(echo=F,message=F, warning=F)
+suppressMessages(if (!require("pacman")) install.packages("pacman"))
+pacman::p_load(tidyverse,rio,janitor,here)
+source(here::here("Scripts","0.functions.R"))
+```
+
+```{r import, include=F}
+master <- readRDS(here("Outputs","Intermediate outputs","master_clean.rds"))
+```
+
+```{r xpert recode}
+# Recode xpert
+master <- recode_xpert_pool_results(master,
+                                    xpert_result_col = "Xpert_result",
+                                    pool_result_col  = "pool_resultt",
+                                    xpert_trace = c("as_pos"),
+                                    pool_trace  = c("as_pos_xpert"))
+
+
+# Fixing poolsize formatting
+master <- master %>%
+  mutate(poolsize = factor(poolsize, levels = c(2L, 3L, 4L))
+         )
+
+# Harmonized master df 
+# Make it coherent with STARD by removing all invalid pools
+# remove all pools with NA
+# keeping only valid (pos,neg) results to achieve consistent denominator
+masterH <- master %>%
+  filter(!is.na(pooling)) %>%
+   filter(
+    xpert %in% c("pos", "neg"),
+    pooling %in% c("pos", "neg"),
+    culture %in% c("pos", "neg")
+  )
+```
+
+```{r analysis population}
+# Table for appendix
+valid_vals <- c("pos", "neg")
+
+count_analysis <- function(dat, vars, has_culture = FALSE) {
+  dat %>%
+    mutate(
+      miss   = if_any(all_of(vars), is.na),
+      contam = if (has_culture) (!miss & culture == "contaminated") else FALSE,
+      incl   = (!miss & !contam & if_all(all_of(vars), ~ .x %in% valid_vals)),
+      inv    = (!miss & !contam & !incl)
+    ) %>%
+    summarise(
+      `Included in analysis`              = sum(incl, na.rm = TRUE),
+      `Excluded: missing`                 = sum(miss, na.rm = TRUE),
+      `Excluded: contaminated culture`    = sum(contam, na.rm = TRUE),
+      `Excluded: invalid/error/noresult`  = sum(inv, na.rm = TRUE),
+      Total                               = n()
+    )
+}
+
+analysis_populations <- bind_rows(
+  count_analysis(master, c("pooling","xpert","culture"), has_culture = TRUE) %>%
+    mutate(Comparison = "Primary analysis: (Pooled testing, Individual Xpert Ultra) vs culture"),
+
+  count_analysis(master, c("pooling","culture"), has_culture = TRUE) %>%
+    mutate(Comparison = "Pooled testing vs culture"),
+
+  count_analysis(master, c("xpert","culture"), has_culture = TRUE) %>%
+    mutate(Comparison = "Individual Xpert Ultra vs culture"),
+
+  count_analysis(master, c("pooling","xpert"), has_culture = FALSE) %>%
+    mutate(Comparison = "Pooled testing vs Individual Xpert Ultra")
+) %>%
+  rename(`Excluded: invalid/error/noresult Xpert result` = `Excluded: invalid/error/noresult`) %>%
+  select(
+    Comparison,
+    `Included in analysis`,
+    `Excluded: missing`,
+    `Excluded: contaminated culture`,
+    `Excluded: invalid/error/noresult Xpert result`,
+    Total
+  )
+
+analysis_populations
+
+export(analysis_populations, here("Outputs","Performance","Appendix table","Appendix_analysis_pop.xlsx"))
+```
+
+```{r}
+calculate_performance <- function(data,
+                                  tests,
+                                  reference_standards,
+                                  grouping_vars = NULL,
+                                  pos_label = "pos",
+                                  neg_label = "neg",
+                                  digits = 3,
+                                  compact = FALSE) {
+  
+  ci_binom <- function(success, total) {
+    if (is.na(success) || is.na(total) || total <= 0) return(c(NA_real_, NA_real_))
+    as.numeric(stats::binom.test(success, total, conf.level = 0.95)$conf.int)
+  }
+  
+  compute_metrics_for_pair <- function(df, test, ref) {
+    n_all <- nrow(df)
+    n_used_df <- df %>%
+      dplyr::select(dplyr::all_of(c(test, ref))) %>%
+      tidyr::drop_na()
+    
+    n_used <- nrow(n_used_df)
+    n_excluded <- 0L
+    
+    if (n_used == 0) {
+      return(tibble::tibble(
+        test = test, reference = ref,
+        tp = 0L, fp = 0L, tn = 0L, fn = 0L, total = 0L,
+        sensitivity = NA_real_, sen_ciL = NA_real_, sen_ciH = NA_real_,
+        specificity = NA_real_, spec_ciL = NA_real_, spec_ciH = NA_real_,
+        prevalence  = NA_real_,
+        ppv = NA_real_, ppv_ciL = NA_real_, ppv_ciH = NA_real_,
+        npv = NA_real_, npv_ciL = NA_real_, npv_ciH = NA_real_,
+        lr_pos = NA_real_, lr_neg = NA_real_,
+        n_excluded = as.integer(n_excluded)
+      ))
+    }
+    
+    tp <- sum(n_used_df[[test]] == pos_label & n_used_df[[ref]] == pos_label)
+    fp <- sum(n_used_df[[test]] == pos_label & n_used_df[[ref]] == neg_label)
+    fn <- sum(n_used_df[[test]] == neg_label & n_used_df[[ref]] == pos_label)
+    tn <- sum(n_used_df[[test]] == neg_label & n_used_df[[ref]] == neg_label)
+    total <- tp + fp + fn + tn
+    
+    n_excluded <- n_used - total
+    
+    sens <- if ((tp + fn) > 0) tp / (tp + fn) else NA_real_
+    spec <- if ((tn + fp) > 0) tn / (tn + fp) else NA_real_
+    
+    ci_s   <- ci_binom(tp, tp + fn); sens_l <- ci_s[1]; sens_u <- ci_s[2]
+    ci_p   <- ci_binom(tn, tn + fp); spec_l <- ci_p[1]; spec_u <- ci_p[2]
+    
+    prev <- if (total > 0) (tp + fn) / total else NA_real_
+    
+    ppv_den <- tp + fp
+    npv_den <- tn + fn
+    ppv <- if (ppv_den > 0) tp / ppv_den else NA_real_
+    npv <- if (npv_den > 0) tn / npv_den else NA_real_
+    ci_ppv <- ci_binom(tp, ppv_den); ppv_l <- ci_ppv[1]; ppv_u <- ci_ppv[2]
+    ci_npv <- ci_binom(tn, npv_den); npv_l <- ci_npv[1]; npv_u <- ci_npv[2]
+    
+    lr_pos <- if (!is.na(sens) && !is.na(spec) && (1 - spec) > 0) sens / (1 - spec) else Inf
+    if (is.infinite(lr_pos) && (is.na(sens) || is.na(spec))) lr_pos <- NA_real_
+    lr_neg <- if (!is.na(sens) && !is.na(spec) && spec > 0) (1 - sens) / spec else Inf
+    if (is.infinite(lr_neg) && (is.na(sens) || is.na(spec))) lr_neg <- NA_real_
+    
+    tibble::tibble(
+      test = test, reference = ref,
+      tp = as.integer(tp), fp = as.integer(fp), tn = as.integer(tn), fn = as.integer(fn),
+      total = as.integer(total),
+      sensitivity = sens, sen_ciL = sens_l, sen_ciH = sens_u,
+      specificity = spec,  spec_ciL = spec_l, spec_ciH = spec_u,
+      prevalence  = prev,
+      ppv = ppv, ppv_ciL = ppv_l, ppv_ciH = ppv_u,
+      npv = npv, npv_ciL = npv_l, npv_ciH = npv_u,
+      lr_pos = lr_pos, lr_neg = lr_neg,
+      n_excluded = as.integer(n_excluded)
+    )
+  }
+  
+  compute_for_group <- function(df) {
+    tidyr::expand_grid(test = tests, reference = reference_standards) %>%
+      purrr::pmap_dfr(~ compute_metrics_for_pair(df, ..1, ..2))
+  }
+  
+  if (!is.null(grouping_vars) && length(grouping_vars) > 0) {
+    grouped <- data %>%
+      dplyr::group_by(dplyr::across(dplyr::all_of(grouping_vars)), .drop = FALSE) %>%
+      dplyr::group_modify(~ compute_for_group(.x)) %>%
+      dplyr::ungroup()
+    
+    overall <- compute_for_group(data) %>%
+      dplyr::mutate(!!!setNames(rep(list("Overall"), length(grouping_vars)), grouping_vars)) %>%
+      dplyr::relocate(dplyr::all_of(grouping_vars), .before = 1)
+    
+    res <- dplyr::bind_rows(overall, grouped)
+  } else {
+    res <- compute_for_group(data)
+  }
+  
+  if (compact) {
+    res <- dplyr::select(res, -dplyr::any_of(c(
+      "prevalence","ppv","ppv_ciL","ppv_ciH","npv","npv_ciL","npv_ciH","lr_pos","lr_neg","n_excluded"
+    )))
+  }
+  
+  
+  rate_cols <- c("sensitivity","sen_ciL","sen_ciH",
+                 "specificity","spec_ciL","spec_ciH",
+                 "prevalence",
+                 "ppv","ppv_ciL","ppv_ciH",
+                 "npv","npv_ciL","npv_ciH",
+                 "lr_pos","lr_neg")
+  rate_cols <- intersect(rate_cols, names(res))
+  
+  res %>%
+    dplyr::mutate(
+      dplyr::across(dplyr::all_of(rate_cols),
+                    ~ ifelse(!is.na(.) & is.finite(.) & . < 1, round(., digits), .))
+    )
+}
+```
+
+
+```{r for efficiency table}
+eval_px <- c("pooling", "xpert")
+ref_culture <- c("culture")
+
+exp <- calculate_performance(data              = master,
+                           tests             = c("pooling"),
+                           reference_standards = c("culture"),
+                           grouping_vars     = c("poolsize")) %>% 
+  filter(!is.na(poolsize)) %>% 
+  select(1:3,9,12)
+
+exi <- calculate_performance(data              = master,
+                            tests             = c("xpert"),
+                            reference_standards = c("culture"),
+                            grouping_vars     = NULL) %>% 
+  select(1,2,8,11)
+
+eff_sen <- bind_rows(exp,exi)
+
+saveRDS(eff_sen, here("Outputs","Intermediate outputs","efficiency_sen_spec.rds"))
+```
+
+
+```{r performance tables}
+# =========================
+# 1) Performance vs CULTURE (masterH + master)
+# =========================
+eval_px     <- c("pooling", "xpert")
+ref_culture <- "culture"
+timestamp   <- format(Sys.time(), "%Y%m%d-%H%M%S")
+out_dir     <- here("Outputs","Performance")
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+grp_specs <- list(
+  Performance             = NULL,
+  Country                 = "Country_Name",
+  Setting                 = "settingACF",
+  HIV                     = "hiv_status_short",
+  PoolSize                = "poolsize",
+  PoolSizeCountry         = c("Country_Name","poolsize"),
+  PoolSizeCountrySetting  = c("Country_Name","poolsize","settingACF")
+)
+
+perf_bundle_culture <- function(dat) {
+  core <- imap(grp_specs, ~ calculate_performance(
+    data                = dat,
+    tests               = eval_px,
+    reference_standards = ref_culture,
+    grouping_vars       = .x,
+    compact = TRUE
+  ))
+  # only amongst culture-positive
+  mtbc <- calculate_performance(
+    data                = dat %>%filter(culture == "pos"),
+    tests               = eval_px, #c("pooling"),
+    reference_standards = ref_culture,
+    grouping_vars       = "mtb_grade"
+  ) %>%
+    select(mtb_grade, test, reference, tp, fp, tn, fn, total, sensitivity, sen_ciL, sen_ciH)
+  append(core, list(MTBgrade = mtbc))
+}
+
+# ---- Harmonized data = masterH ----
+tabs_culture_H <- perf_bundle_culture(masterH)
+
+
+# ---- master ----
+tabs_culture <- perf_bundle_culture(master)
+
+```
+
+```{r stacked df for forest plot - culture}
+rename_to_characteristic <- function(df) {
+  gcol <- intersect(names(df), c("Country_Name","settingACF","hiv_status_short","poolsize","mtb_grade"))
+  if (length(gcol) == 1) dplyr::rename(df, Characteristic = dplyr::all_of(gcol)) else df
+}
+
+forest_culture_H <- dplyr::bind_rows(
+  Country  = tabs_culture_H$Country  %>% rename_to_characteristic(),
+  "Pool Size" = tabs_culture_H$PoolSize %>% rename_to_characteristic()  %>% dplyr::filter(!tolower(Characteristic) %in% c("overall","all")),
+  Setting  = tabs_culture_H$Setting  %>% rename_to_characteristic()  %>% dplyr::filter(!tolower(Characteristic) %in% c("overall","all")),
+  HIV      = tabs_culture_H$HIV      %>% rename_to_characteristic()  %>% dplyr::filter(!tolower(Characteristic) %in% c("overall","all")),
+  "MTB grade" = tabs_culture_H$MTBgrade   %>% rename_to_characteristic()  %>% dplyr::filter(!tolower(Characteristic) %in% c("overall","all")),
+  .id = "Subgroup"
+) %>% dplyr::relocate(Subgroup, Characteristic, .before = 1)
+
+forest_culture_H <- forest_culture_H %>% {
+  idx <- head(which(.$Subgroup == "Country" & tolower(.$Characteristic) %in% c("overall","all")), 2)
+  dplyr::mutate(.,
+    Subgroup = replace(Subgroup, idx, "Overall"),
+    Characteristic = replace(Characteristic, idx, "Overall")
+  )
+}
+
+saveRDS(forest_culture_H, here("Outputs","Intermediate outputs","forest_culture_stacked.rds"))
+```
+
+
+```{r performance PPA tables}
+# =========================
+# 2) PPA vs XPERT (master)
+# For PPA, we don't need harmonized
+# =========================
+eval_p    <- "pooling"
+ref_xpert <- "xpert"
+timestamp <- format(Sys.time(), "%Y%m%d-%H%M%S")
+out_dir   <- here("Outputs","Performance")
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+grp_specs <- list(
+  Performance             = NULL,
+  Country                 = "Country_Name",
+  Setting                 = "settingACF",
+  HIV                     = "hiv_status_short",
+  PoolSize                = "poolsize",
+  PoolSizeCountry         = c("Country_Name","poolsize"),
+  PoolSizeCountrySetting  = c("Country_Name","poolsize","settingACF")
+)
+
+ppa_bundle <- function(dat) {
+  core <- imap(grp_specs, ~ calculate_performance(
+    data                = dat,
+    tests               = eval_p,
+    reference_standards = ref_xpert,
+    grouping_vars       = .x,
+    compact = TRUE
+  ))
+  mtb <- calculate_performance(
+    data                = dat,
+    tests               = eval_p,
+    reference_standards = ref_xpert,
+    grouping_vars       = "mtb_grade"
+  ) %>%
+    select(mtb_grade, test, reference, tp, fp, tn, fn, total, sensitivity, sen_ciL, sen_ciH)
+  append(core, list(MTBgrade = mtb))
+}
+
+# ---- master ----
+tabs_ppa <- ppa_bundle(master)
+```
+
+```{r stacked df for forest plot PPA}
+rename_to_characteristic <- function(df) {
+  gcol <- intersect(names(df), c("Country_Name","settingACF","hiv_status_short","poolsize","mtb_grade"))
+  if (length(gcol) == 1) dplyr::rename(df, Characteristic = dplyr::all_of(gcol)) else df
+}
+
+# ---- PPA forest stack (incl. MTBgrade) ----
+forest_ppa <- dplyr::bind_rows(
+  Country     = tabs_ppa$Country    %>% rename_to_characteristic(),
+  "Pool Size" = tabs_ppa$PoolSize   %>% rename_to_characteristic() %>% dplyr::filter(!tolower(Characteristic) %in% c("overall","all")),
+  Setting     = tabs_ppa$Setting    %>% rename_to_characteristic() %>% dplyr::filter(!tolower(Characteristic) %in% c("overall","all")),
+  HIV         = tabs_ppa$HIV        %>% rename_to_characteristic() %>% dplyr::filter(!tolower(Characteristic) %in% c("overall","all")),
+  "MTB grade" = tabs_ppa$MTBgrade   %>% rename_to_characteristic(),
+  .id = "Subgroup"
+) %>% dplyr::relocate(Subgroup, Characteristic, .before = 1)
+
+forest_ppa <- forest_ppa %>% {
+  idx <- head(which(.$Subgroup == "Country" & tolower(.$Characteristic) %in% c("overall","all")), 2)
+  dplyr::mutate(.,
+    Subgroup       = replace(Subgroup, idx, "Overall"),
+    Characteristic = replace(Characteristic, idx, "Overall")
+  )
+} %>% 
+  filter(!is.na(Characteristic))
+
+saveRDS(forest_ppa, here("Outputs","Intermediate outputs","forest_ppa_stacked.rds"))
+```
+
+```{r export analysis appendix}
+# These are tables to be put in appendix.
+
+# 2. tabs_culture_H$PoolSizeCountry + 3. tabs_culture_H$PoolSizeCountrySetting
+export(
+  tabs_culture_H,
+  here(out_dir, sprintf("S4A_pooling_performance_harmonized_%s.xlsx", timestamp)),
+  overwrite = TRUE
+)
+
+# 1. Non-harmonized = built with master
+export(
+  tabs_culture,
+  here(out_dir, sprintf("S4A_pooling_performance_%s.xlsx", timestamp)),
+  overwrite = TRUE
+)
+
+# PPA
+export(
+  tabs_ppa,
+  here(out_dir, sprintf("S4A_pooling_ppa_%s.xlsx", timestamp)),
+  overwrite = TRUE
+)
+```
+
+
+```{r formatted appendix table}
+# =========================
+# 1) For Appendix: Performance vs CULTURE (masterH + master)
+# =========================
+strip_appendix_cols <- function(x) x %>% select(-any_of(c("lr_pos","lr_neg","n_excluded")))
+
+eval_px     <- c("pooling", "xpert")
+ref_culture <- "culture"
+timestamp   <- format(Sys.time(), "%Y%m%d-%H%M%S")
+out_dir     <- here("Outputs","Performance","Appendix table")
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+grp_specs <- list(
+  Performance             = NULL,
+  Country                 = "Country_Name",
+  Setting                 = "settingACF",
+  HIV                     = "hiv_status_short",
+  PoolSize                = "poolsize",
+  PoolSizeCountry         = c("Country_Name","poolsize"),
+  PoolSizeCountrySetting  = c("Country_Name","poolsize","settingACF")
+)
+
+perf_bundle_culture2 <- function(dat) {
+  core <- imap(grp_specs, ~ calculate_performance(
+    data                = dat,
+    tests               = eval_px,
+    reference_standards = ref_culture,
+    grouping_vars       = .x,
+    compact = FALSE
+  ))
+  core <- map(core, strip_appendix_cols)
+  
+  # only amongst culture-positive
+  mtbc <- calculate_performance(
+    data                = dat %>%filter(culture == "pos"),
+    tests               = eval_px, #c("pooling"),
+    reference_standards = ref_culture,
+    grouping_vars       = "mtb_grade",
+    compact             = FALSE
+  ) %>%
+    select(mtb_grade, test, reference, tp, fp, tn, fn, total, sensitivity, sen_ciL, sen_ciH)
+  mtbc <- strip_appendix_cols(mtbc)
+  append(core, list(MTBgrade = mtbc))
+}
+
+# ---- Harmonized data = masterH ----
+app_culture_H <- perf_bundle_culture2(masterH)
+
+# ---- master ----
+app_culture <- perf_bundle_culture2(master)
+
+export(
+  app_culture_H,
+  file.path(out_dir, sprintf("Appendix_pooling_performance_harmonized_%s.xlsx", timestamp)),
+  overwrite = TRUE
+)
+
+export(
+  app_culture,
+  file.path(out_dir, sprintf("Appendix_pooling_performance_%s.xlsx", timestamp)),
+  overwrite = TRUE)
+
+
+```
+
+```{r formatted appendix table PPA}
+# =========================
+# Appendix
+# 2) PPA vs XPERT (master)
+# =========================
+eval_p    <- "pooling"
+ref_xpert <- "xpert"
+timestamp <- format(Sys.time(), "%Y%m%d-%H%M%S")
+out_dir     <- here("Outputs","Performance","Appendix table")
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+grp_specs <- list(
+  Performance             = NULL,
+  Country                 = "Country_Name",
+  Setting                 = "settingACF",
+  HIV                     = "hiv_status_short",
+  PoolSize                = "poolsize",
+  PoolSizeCountry         = c("Country_Name","poolsize"),
+  PoolSizeCountrySetting  = c("Country_Name","poolsize","settingACF")
+)
+
+ppa_bundle2 <- function(dat) {
+  core <- imap(grp_specs, ~ calculate_performance(
+    data                = dat,
+    tests               = eval_p,
+    reference_standards = ref_xpert,
+    grouping_vars       = .x,
+    compact = FALSE
+  ))
+  core <- map(core, strip_appendix_cols)
+  mtb <- calculate_performance(
+    data                = dat,
+    tests               = eval_p,
+    reference_standards = ref_xpert,
+    grouping_vars       = "mtb_grade"
+  ) %>%
+  select(mtb_grade, test, reference, tp, fp, tn, fn, total, sensitivity, sen_ciL, sen_ciH)
+  mtb  <- strip_appendix_cols(mtb)
+  append(core, list(MTBgrade = mtb))
+}
+
+# ---- master ----
+app_ppa <- ppa_bundle2(master)
+
+export(
+  app_ppa,
+  file.path(out_dir, sprintf("Appedix_pooling_ppa_%s.xlsx", timestamp)),
+  overwrite = TRUE)
+```
+
+

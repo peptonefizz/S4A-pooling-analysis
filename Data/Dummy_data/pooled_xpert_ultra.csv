@@ -1,0 +1,7 @@
+Country_Name,poolno,no_samp_in_pool,xpert_p_no_1,xpert_p_no_2,xpert_p_no_3,xpert_p_no_4,xpert_p1_mtb,xpert_p2_mtb
+Cameroon,CM-P2-001,2,CM0001,CM0002,,,1,
+Cameroon,CM-P2-002,2,CM0003,CM0004,,,2,
+Cameroon,CM-P3-001,3,CM0005,CM0006,CM0007,,3,2
+Cameroon,CM-P3-002,3,CM0008,CM0009,CM0010,,1,1
+Cameroon,CM-P4-001,4,CM0011,CM0012,CM0013,CM0014,2,
+Cameroon,CM-P4-002,4,CM0015,CM0016,CM0017,CM0018,1,4

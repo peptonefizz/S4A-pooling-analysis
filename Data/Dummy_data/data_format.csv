@@ -1,0 +1,19 @@
+Country_Name,regno,Site,enrolment_type,key_population,age,sexx,hiv_status,cough,fever,weight_loss,night_sweats,smears_1,smears_2,xray_ai_score,culture_result,culture_mtb_ntm,Xpert_result,Xpert Resultt,mtb_grade,pool_resultt,pool_xpert_result
+Cameroon,CM0001,Dummy site,PCF,Primary Health Centre,14,Female,Negative,No,No,No,No,Missing,Neg,0.453,1,MTB,1,Detected,High,1,Detected
+Cameroon,CM0002,Dummy site,ICF,District Hospital,11,Male,Negative,No,No,Yes,No,Not Done,Missing,0.175,2,,2,Not Detected,Very Low,1,Detected
+Cameroon,CM0003,Dummy site,PCF,Child,13,Male,Negative,Yes,Yes,No,No,Neg,Neg,0.747,2,,2,Not Detected,Low,2,Not Detected
+Cameroon,CM0004,Dummy site,ACF,Rural,19,Male,Negative,Yes,No,No,No,Neg,Missing,0.105,2,,2,Not Detected,High,2,Not Detected
+Cameroon,CM0005,Dummy site,ICF,Primary Health Centre,25,Male,Negative,No,No,No,No,Neg,Neg,0.865,1,MTB,3,Trace,Trace,3,Trace
+Cameroon,CM0006,Dummy site,PCF,District Hospital,41,Female,Positive,Yes,No,No,No,2+,2+,0.615,2,,2,Not Detected,High,3,Trace
+Cameroon,CM0007,Dummy site,ACF,Rural,45,Male,Negative,Yes,No,No,No,Neg,1+,0.557,2,,2,Not Detected,Low,3,Trace
+Cameroon,CM0008,Dummy site,ICF,Child,29,Male,Negative,No,Yes,No,Yes,1+,3+,0.329,1,NTM,1,Detected,Low,1,Detected
+Cameroon,CM0009,Dummy site,PCF,Primary Health Centre,50,Male,Negative,Yes,No,No,No,Missing,Neg,0.453,3,,1,Detected,Medium,1,Detected
+Cameroon,CM0010,Dummy site,ICF,District Hospital,41,Male,Negative,No,No,No,No,Not Done,1+,0.5,2,,2,Not Detected,Medium,1,Detected
+Cameroon,CM0011,Dummy site,PCF,Primary Health Centre,41,Male,Negative,No,No,No,No,Neg,Neg,0.181,2,,2,Not Detected,Low,2,Not Detected
+Cameroon,CM0012,Dummy site,ACF,Rural,38,Female,Negative,Yes,No,Yes,Yes,Neg,Neg,0.53,2,,2,Not Detected,Low,2,Not Detected
+Cameroon,CM0013,Dummy site,ICF,Child,46,Female,Unknown,No,Yes,No,No,Not Done,Not Done,0.075,3,,2,Not Detected,High,2,Not Detected
+Cameroon,CM0014,Dummy site,PCF,District Hospital,29,Male,Negative,Yes,No,No,No,1+,Neg,0.278,2,,2,Not Detected,High,2,Not Detected
+Cameroon,CM0015,Dummy site,PCF,Primary Health Centre,48,Female,Unknown,No,No,No,No,2+,Neg,0.213,1,NTM,1,Detected,High,1,Detected
+Cameroon,CM0016,Dummy site,ICF,Child,19,Male,Negative,No,No,No,No,1+,Neg,0.285,2,,2,Not Detected,Medium,1,Detected
+Cameroon,CM0017,Dummy site,ACF,Rural,37,Male,Unknown,No,No,No,No,3+,Missing,0.895,2,,2,Not Detected,Medium,1,Detected
+Cameroon,CM0018,Dummy site,PCF,District Hospital,24,Female,Negative,No,Yes,No,No,Neg,Neg,0.446,1,MTB,3,Trace,Trace,1,Detected

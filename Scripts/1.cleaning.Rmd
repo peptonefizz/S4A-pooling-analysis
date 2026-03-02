@@ -1,0 +1,240 @@
+---
+title: "S4A pooling analysis: cleaning"
+author: "Tushar Garg"
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include=F}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo=F,message=F, warning=F)
+suppressMessages(if (!require("pacman")) install.packages("pacman"))
+pacman::p_load(tidyverse,rio,janitor,here)
+
+source(here::here("Scripts","0.functions.R"))
+```
+
+```{r import, include=F}
+master <- import(here("Data",folder_name,"data_format.csv")) %>% 
+    mutate(regno = toupper(trimws(regno)))
+
+master_pool <- import(here("Data",folder_name,"pooled_xpert_ultra.csv"))
+```
+
+```{r joining with pooled_xpert_ultra}
+pos_order <- c("xpert_p_no_1","xpert_p_no_2","xpert_p_no_3","xpert_p_no_4")
+
+# Diagnostic check for duplicate values in pools
+dup_diagnostic <- master_pool %>%
+  select(xpert_p_no_1, xpert_p_no_2, xpert_p_no_3, xpert_p_no_4, poolno, no_samp_in_pool) %>%
+  pivot_longer(
+    cols = starts_with("xpert_p_no_"),
+    names_to = "xpert_position",
+    values_to = "regno"
+  ) %>%
+  mutate(regno = na_if(trimws(regno), "")) %>%   # convert blanks to NA
+  filter(!is.na(regno)) %>%
+  group_by(regno) %>%
+  mutate(n_matches = n()) %>%
+  filter(n_matches > 1) %>%
+  arrange(regno, xpert_position) %>%
+  ungroup()
+
+dup_diagnostic
+
+# Bringing pool information into master
+master_pool_transform <- master_pool %>%
+  select(xpert_p_no_1, xpert_p_no_2, xpert_p_no_3, xpert_p_no_4, poolno, no_samp_in_pool) %>%
+  mutate(across(starts_with("xpert_p_no_"), ~na_if(toupper(trimws(.)), ""))) %>%
+  pivot_longer(
+    cols = starts_with("xpert_p_no_"),
+    names_to = "xpert_position",
+    values_to = "regno"
+  ) %>%
+  mutate(regno = na_if(trimws(regno), "")) %>%   # convert blanks to NA
+  filter(!is.na(regno)) %>%
+  mutate(pos_rank = match(xpert_position, pos_order)) %>%
+  arrange(regno, pos_rank) %>%
+  distinct(regno, .keep_all = TRUE) %>%
+  rename(poolsize = no_samp_in_pool)
+
+master <- master %>%
+  left_join(master_pool_transform, by = "regno")
+
+# Diagnostic check for duplicate pool no.
+missing_poolno <- master %>%
+  filter(is.na(poolno)) %>%
+  filter(!is.na(pool_resultt)) %>%
+  select(regno, poolno, pool_resultt)
+
+missing_poolno
+```
+
+
+```{r mapping data, include=F}
+# Unique values for each column
+unique_values <- master %>%
+  summarise(across(everything(), ~ list(unique(.)))) %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "Variable") %>%
+  rename(Unique_Values = V1)
+
+# Unique value and levels for each variable
+mapping_pairs <- tribble(
+  ~var_code,            ~var_label,
+  "country",            "Country_Name",
+  "enroltype",          "enrolment_type",
+  "how_enrolled",       "how_enrolledd",
+  "sex",                "sexx",
+  "dwelling",           "dwellingg",
+  "hiv",                "hiv_status",
+  "ci_cough",           "cough",
+  "ci_sputum",          "sputum",
+  "ci_fever",           "fever",
+  "ci_cpain",           "chest_pain",
+  "ci_weak",            "weakness",
+  "ci_heam",            "haemoptysis",
+  "ci_wloss",           "weight_loss",
+  "ci_sweat",           "night_sweats",
+  "ci_appe",            "loss_of_appetite",
+  "ci_short_breath",    "shortness_of_breath",
+  "culture_result",     "culture_results",
+  "crp_rapid_result",   "CRP Rapid",
+  "urine_lam_results",  "LAM",
+  "qure_outcome",       "qure_outcomee",
+  "Smear_1",            "smears_1",
+  "Smear_2",            "smears_2",
+  "Xpert_result",       "Xpert Resultt",
+  "pool_resultt",       "pool_xpert_result"
+)
+
+# Build mapping (skips pairs if either column missing)
+variable_map <- mapping_pairs %>%
+  filter(var_code %in% names(master), var_label %in% names(master)) %>%
+  transmute(vc = var_code, vl = var_label) %>%
+  pmap_dfr(\(vc, vl) {
+    master %>%
+      distinct(!!sym(vc), !!sym(vl)) %>%
+      rename(Integer_Value = !!sym(vc), Label = !!sym(vl)) %>%
+      mutate(Variable = vc, .before = 1)
+  }) %>%
+  select(Variable, Integer_Value, Label)
+
+
+export(unique_values,here("Outputs","Intermediate outputs","unique_values.csv"))
+export(variable_map,here("Outputs","Intermediate outputs","variable_map.csv"))
+```
+
+
+```{r cleaning}
+# Culture NTM = Culture negative
+master <- master %>%
+  mutate(
+    culture = case_when(
+      culture_result == 1 & culture_mtb_ntm == "NTM" ~ "neg",  #NTM -> Culture Negative
+      culture_result == 1 & culture_mtb_ntm == "MTB" ~ "pos",  #MTB -> Culture Positive
+      culture_result == 2 ~ "neg",
+      culture_result == 3 ~ "contaminated"
+    ),
+    culture = factor(culture, levels = c("neg", "pos", "contaminated"))
+  )
+
+# Combining Nigeria JHF and ZRC into Nigeria
+master <- master %>%
+  mutate(org = case_when(
+    Country_Name == "Nigeria JHF" ~ "JHF",
+    Country_Name == "Nigeria ZRC" ~ "ZRC",
+    TRUE ~ NA_character_
+  ),
+  Country_Name = if_else(Country_Name %in% c("Nigeria JHF", "Nigeria ZRC"), "Nigeria", Country_Name)) 
+
+# Creating age_type, setting, and cleaning ssm (setting and ssm aligned with Marc's code)
+master <- master %>%
+  mutate(
+    age_type = case_when(
+      age < 15 ~ "Child",
+      age >= 15 ~ "Adult",
+      TRUE ~ NA_character_
+    ),
+    setting=case_when(
+      Country_Name=="Cameroon" & enrolment_type %in% c("PCF","ICF") & key_population=="Primary Health Centre"~"PHC",
+      Country_Name=="Cameroon" & enrolment_type %in% c("PCF","ICF") & key_population=="Child"~"Children",
+      Country_Name=="Cameroon" & enrolment_type %in% c("PCF","ICF") & key_population=="District Hospital"~"District",
+      Country_Name=="Cameroon" & enrolment_type=="ACF" & key_population=="Rural"~"Rural",
+      Country_Name=="Nigeria" & enrolment_type %in% c("PCF","ICF") & grepl(Site,pattern="PHC")~"PHC",
+      Country_Name=="Nigeria" & enrolment_type %in% c("PCF","ICF") & grepl(Site,pattern="District")~"District",
+      Country_Name=="Nigeria" & enrolment_type=="ACF" & key_population=="IDP"~"IDP",
+      Country_Name=="Nigeria" & enrolment_type=="ACF" & key_population=="Refugee"~"IDP",
+      Country_Name=="Nigeria" & enrolment_type=="ACF" & key_population=="Nomad"~"Nomads",
+      Country_Name=="Kenya" & enrolment_type %in% c("PCF","ICF") & grepl(Site,pattern="Sub")~"PHC",
+      Country_Name=="Kenya" & enrolment_type %in% c("PCF","ICF") & grepl(Site,pattern="Referral")~"District",
+      Country_Name=="Bangladesh" & enrolment_type %in% c("PCF","ICF") & Site %in% c("Charghat Upazila Healh Complexes, Rajshahi","Godagari Upazila Health Complexes, Rajshahi")~"PHC", # as per Vibol email from 13/02/2025
+      Country_Name=="Bangladesh" & enrolment_type %in% c("PCF","ICF") & Site %in% c("250 Bedded Sadar Hospital, Chapainawabganj","Narsingdi District Hospital","Narsingdi Sadar Hospital")~"District", # as per Vibol email from 13/02/2025
+      Country_Name=="Bangladesh" & enrolment_type=="ACF" & key_population=="Informal Settlement"~"Informal settlements",
+      Country_Name=="Brazil"~"PHC",
+      Country_Name=="Viet Nam" & key_population=="Urban" & enrolment_type=="ICF"~"District",
+      Country_Name=="Viet Nam" & key_population=="Urban" & enrolment_type=="ACF"~"Informal settlements",
+      # Country_Name=="Viet Nam" & key_population=="Child" & enrolment_type=="ICF"~"Children",
+      Country_Name=="Viet Nam" & key_population=="Child"~"Children",
+      Country_Name=="Malawi"~"PHC",
+      TRUE~NA_character_
+    ),
+    ssm=case_when(
+      smears_1=="Scanty" | grepl(smears_1,pattern="\\+") | smears_2=="Scanty" | grepl(smears_2,pattern="\\+") ~ 1,
+      (smears_1=="Neg" & !(smears_1=="Scanty" | grepl(smears_1,pattern="\\+"))) | (smears_2=="Neg" & !(smears_2=="Scanty" | grepl(smears_2,pattern="\\+")))~0,
+      smears_1 %in% c("Missing","Not Done","") & smears_2 %in% c("Missing","Not Done","")~NA_integer_,
+      is.na(smears_1) & is.na(smears_2)~NA_integer_
+    )
+  )
+
+# Case-finding column
+# ACF = CBCF = community-based case-finding
+# PCF+ICF = FBCF = facility-based case-finding
+master <- master %>%
+  mutate(case_finding = recode(enrolment_type,
+                                 "ACF" = "CBCF",
+                                 "ICF" = "FBCF",
+                                 "PCF" = "FBCF")) %>% 
+# A new variable for setting = ACF, District, PHC, Children
+  mutate(
+    settingACF = case_when(
+      setting %in% c("IDP", "Informal settlements", "Nomads","Rural") ~ "ACF",
+      TRUE ~ setting
+    )
+  ) %>% 
+  # cleaning HIV variable
+  mutate(
+    hiv_status_short = case_when(
+      hiv_status == "Positive" ~ "Positive",
+      hiv_status == "Negative" ~ "Negative",
+      TRUE ~ "Unknown"
+    ) %>%
+      factor(levels = c("Positive", "Negative", "Unknown"))
+  )
+
+
+# fixing mtb_grade. bringing trace from xpert result
+master <- master %>%
+  mutate(
+    mtb_grade = if_else(`Xpert Resultt` == "Trace", "Trace", as.character(mtb_grade)) %>%
+      factor(levels = c("High", "Low", "Medium", "Very Low", "Trace"))
+  )
+
+# New variables: AI score >= 0.3, w4ss.
+master <- master %>%
+  mutate(
+    ai30 = factor(
+      if_else(xray_ai_score >= 0.3, "Yes", "No", missing = NA_character_),
+      levels = c("Yes", "No")
+    ),
+    w4ss = if_else(
+      if_any(c(cough, fever, weight_loss, night_sweats), ~ . == "Yes"),
+      "Yes", "No"
+    ) %>% factor(levels = c("Yes", "No"))
+  )
+
+```
+
+```{r export, include=F}
+saveRDS(master, here("Outputs","Intermediate outputs","master_clean.rds"))
+```
