@@ -142,6 +142,40 @@ pool_summary <- master_pool %>%
 saveRDS(pool_summary, here("Outputs","Intermediate outputs","pool_summary.rds"))
 ```
 
+```{r summary of pooled specimen test}
+# creating temporary dataframe only for this chunk - during manuscript writing
+master_pool2 <- master_pool %>%
+  mutate(.row_id = row_number()) %>%
+  pivot_longer(
+    cols = starts_with("xpert_p_no_"),
+    names_to = "slot",
+    values_to = "regno",
+    values_drop_na = FALSE
+  ) %>%
+  left_join(master %>% select(regno, culture), by = "regno") %>%
+  mutate(slot = str_extract(slot, "\\d+")) %>%
+  pivot_wider(
+    id_cols = .row_id,
+    names_from = slot,
+    values_from = culture,
+    names_prefix = "culture_"
+  ) %>%
+  right_join(master_pool %>% mutate(.row_id = row_number()), by = ".row_id") %>%
+  relocate(starts_with("culture_"), .after = xpert_p_no_4) %>%
+  mutate(
+    pool_culture_any_pos = case_when(
+      if_all(starts_with("culture_"), is.na) ~ NA,
+      if_any(starts_with("culture_"), ~ .x %in% c("pos","positive","POS","Positive")) ~ TRUE,
+      TRUE ~ FALSE)) %>% 
+  select(-.row_id)
+
+# False positive (FP) specimen pool result: Xpert MTB positive but culture any positive == FALSE
+# (FALSE = All specimen in pool are culture neg; TRUE = at least one positive culture; NA = no culture on either specimen)
+master_pool2 %>% tabyl(xpert_p_mtb,pool_culture_any_pos)
+
+```
+
+
 ```{r individual xpert inconclusive proportion}
 # What is the proportion of Xpert that need to be repeated because of Invalid/Error/No Result?
 master_ind_xpert1 <- bind_rows(
