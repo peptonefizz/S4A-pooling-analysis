@@ -104,15 +104,23 @@ cols_to_blank <- c("Characteristic","N","TP","FN","TN","FP",
                    "Individual Xpert Ultra sensitivity (95% CI)","Individual Xpert Ultra specificity (95% CI)")
 dt <- dt %>% mutate(across(all_of(cols_to_blank), ~ dplyr::coalesce(as.character(.x), "")))
 
+# total n for mtb_grade subgroup
+n_mtb_grade <- dt %>% 
+  filter(Subgroup == "MTB grade", !is.na(total_xpert)) %>% 
+  summarise(n = sum(total_xpert, na.rm = TRUE)) %>% 
+  pull(n)
+
 # formatting for MTB grade rows
 dt <- dt %>%
   mutate(
     across(c(FP, TN), ~ ifelse(.x == 0, "—", as.character(.x))),
     `Pooled testing specificity (95% CI)` = stringr::str_replace(`Pooled testing specificity (95% CI)`, "^NA% \\(NA.?NA\\)$", "—"),
     `Individual Xpert Ultra specificity (95% CI)`   = stringr::str_replace(`Individual Xpert Ultra specificity (95% CI)`,   "^NA% \\(NA.?NA\\)$", "—"),
-    Characteristic = dplyr::if_else(as.character(Characteristic) == "MTB grade",
-                                    "MTB grade (culture positive only)",
-                                    as.character(Characteristic))
+    Characteristic = dplyr::if_else(
+      as.character(Characteristic) == "MTB grade",
+      paste0("MTB grade (culture positive only, n=", n_mtb_grade, ")"),
+      as.character(Characteristic)
+    )
   )
 
 # MTB grade: label last row
@@ -237,7 +245,6 @@ p <- forest(dt[,c("Characteristic",
   edit_plot(row = setdiff(seq_len(nrow(dt)), categorylabel),
             which = "background",
             gp = gpar(fill = "white"))
-
 
 
 # print(p)
