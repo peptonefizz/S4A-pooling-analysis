@@ -113,7 +113,15 @@ n_mtb_grade <- dt %>%
 # formatting for MTB grade rows
 dt <- dt %>%
   mutate(
-    across(c(FP, TN), ~ ifelse(.x == 0, "—", as.character(.x))),
+    # hides warning NAs introduced by coercion
+    FP_i  = suppressWarnings(as.integer(FP)),
+    TN_i  = suppressWarnings(as.integer(TN)),
+    is_header = N == "" & TP == "" & FN == "" & TN == "" & FP == "" & Characteristic != "",
+    n_neg = dplyr::coalesce(TN_i, 0L) + dplyr::coalesce(FP_i, 0L),
+    
+    FP = dplyr::if_else(is_header, "", dplyr::if_else(n_neg == 0L, "—", as.character(FP_i))),
+    TN = dplyr::if_else(is_header, "", dplyr::if_else(n_neg == 0L, "—", as.character(TN_i))),
+    
     `Pooled testing specificity (95% CI)` = stringr::str_replace(`Pooled testing specificity (95% CI)`, "^NA% \\(NA.?NA\\)$", "—"),
     `Individual Xpert Ultra specificity (95% CI)`   = stringr::str_replace(`Individual Xpert Ultra specificity (95% CI)`,   "^NA% \\(NA.?NA\\)$", "—"),
     Characteristic = dplyr::if_else(
