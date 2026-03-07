@@ -42,6 +42,13 @@ masterH <- master %>%
   )
 ```
 
+```{r export short dataset}
+master %>%
+  select(Country_Name,case_finding,settingACF,culture,xpert,mtb_grade,pooling,poolsize,poolno,pool_xpert_result,pool_mtb_grade,ssm,hiv_status_short) %>% 
+  export(.,here("Outputs","Intermediate outputs","master_short.xlsx"))
+```
+
+
 ```{r analysis population}
 # Table for appendix
 valid_vals <- c("pos", "neg")

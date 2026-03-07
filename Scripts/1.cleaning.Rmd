@@ -179,11 +179,17 @@ master <- master %>%
       Country_Name=="Malawi"~"PHC",
       TRUE~NA_character_
     ),
-    ssm=case_when(
-      smears_1=="Scanty" | grepl(smears_1,pattern="\\+") | smears_2=="Scanty" | grepl(smears_2,pattern="\\+") ~ 1,
-      (smears_1=="Neg" & !(smears_1=="Scanty" | grepl(smears_1,pattern="\\+"))) | (smears_2=="Neg" & !(smears_2=="Scanty" | grepl(smears_2,pattern="\\+")))~0,
-      smears_1 %in% c("Missing","Not Done","") & smears_2 %in% c("Missing","Not Done","")~NA_integer_,
-      is.na(smears_1) & is.na(smears_2)~NA_integer_
+    ssm = case_when(
+      smears_1 == "Scanty" | grepl("\\+", ifelse(is.na(smears_1), "", smears_1)) |
+        smears_2 == "Scanty" | grepl("\\+", ifelse(is.na(smears_2), "", smears_2)) ~ "pos",
+      
+      smears_1 %in% c("Neg", "Negative") |
+        smears_2 %in% c("Neg", "Negative") ~ "neg",
+      
+      (is.na(smears_1) | smears_1 %in% c("Missing", "Not Done", "")) &
+        (is.na(smears_2) | smears_2 %in% c("Missing", "Not Done", "")) ~ NA_character_,
+      
+      TRUE ~ NA_character_
     )
   )
 
