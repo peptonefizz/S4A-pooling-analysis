@@ -32,7 +32,18 @@ base_dt <- forest_ppa %>%
       "District" ~ "DHC",
       .default = Characteristic
     )
-  )
+  ) %>% 
+  mutate(
+    Characteristic = if_else(
+      Subgroup == "MTB grade",
+      factor(Characteristic, levels = c("High", "Medium", "Low", "Very Low", "Trace", "MTB not detected")) %>% as.character(),
+      Characteristic
+    )
+  ) %>%
+  arrange(match(Subgroup, unique(Subgroup)),
+          if_else(Subgroup == "MTB grade",
+                  match(Characteristic, c("High", "Medium", "Low", "Very Low", "Trace", "MTB not detected")),
+                  row_number()))
 
 # total n in MTB grade subgroup (individual Xpert Ultra-positive only)
 n_mtb_grade <- base_dt %>%
@@ -71,6 +82,7 @@ dt <- base_dt %>%
       Characteristic
     )
   )
+
 
 # rows to highlight (overall row + subgroup headers)
 categorylabel <- which(dt$is_header | dt$Characteristic == "Overall")
@@ -171,7 +183,7 @@ ggplot2::ggsave(
   filename = here("Outputs", "Viz_forest", "figure2forest_PPA.png"),
   plot = p,
   dpi = 300,
-  width = 13,
+  width = 12,
   height = 7,
   units = "in"
 )

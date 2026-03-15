@@ -66,6 +66,18 @@ mutate(
     "Individual Xpert Ultra specificity (95% CI)" = specificity_xpert_est
   )
 
+dt <- dt %>%
+  mutate(
+    Characteristic = if_else(
+      Subgroup == "MTB grade",
+      factor(Characteristic, levels = c("High", "Medium", "Low", "Very Low", "Trace", "MTB not detected")) %>% as.character(),
+      Characteristic
+    )
+  ) %>%
+  arrange(match(Subgroup, unique(Subgroup)), 
+          if_else(Subgroup == "MTB grade", 
+                  match(Characteristic, c("High", "Medium", "Low", "Very Low", "Trace", "MTB not detected")), 
+                  row_number()))
 
 dt <- dt %>% 
   mutate(
