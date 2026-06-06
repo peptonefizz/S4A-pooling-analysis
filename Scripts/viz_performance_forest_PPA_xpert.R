@@ -180,9 +180,19 @@ p <- forest(
 print(p)
 
 ggplot2::ggsave(
-  filename = here("Outputs", "Viz_forest", "figure2forest_PPA.png"),
+  filename = here("Outputs", "Viz_forest", "figure5_forest_PPA.png"),
   plot = p,
   dpi = 300,
+  width = 12,
+  height = 7,
+  units = "in"
+)
+
+# Vector export for TLGH submission (SVG; preserves en-dash, no XQuartz needed)
+ggplot2::ggsave(
+  filename = here("Outputs", "Viz_forest", "figure5_forest_PPA.svg"),
+  plot = p,
+  device = svglite::svglite,
   width = 12,
   height = 7,
   units = "in"
