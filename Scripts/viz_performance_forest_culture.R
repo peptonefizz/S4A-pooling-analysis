@@ -269,12 +269,12 @@ p <- forest(dt[,c("Characteristic",
 
 # print(p)
 
-ggplot2::ggsave(filename = here("Outputs","Viz_forest","figure4_forest_culture_narrow.png"),
+ggplot2::ggsave(filename = here("Outputs","Viz_forest","figure3_forest_culture_narrow.png"),
                 plot = p,
                 dpi = 300, width = 25, height = 9, units = "in")
 
 # Vector export for TLGH submission (SVG; preserves en-dash, no XQuartz needed)
-ggplot2::ggsave(filename = here("Outputs","Viz_forest","figure4_forest_culture_narrow.svg"),
+ggplot2::ggsave(filename = here("Outputs","Viz_forest","figure3_forest_culture_narrow.svg"),
                 plot = p,
                 device = svglite::svglite,
                 width = 25, height = 9, units = "in")
